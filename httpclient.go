@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/couchbase/cbauth"
 	"golang.org/x/net/http2"
 )
 
@@ -107,6 +108,11 @@ func updateHttpClient(status int) error {
 			if ss.EncryptionEnabled && ss.ShouldClientsUseClientCert {
 				transport.TLSClientConfig.Certificates = []tls.Certificate{ss.ClientCertificate}
 			}
+
+			transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+				return cbauth.CRLsValidate(rawCerts, verifiedChains, cbauth.CRLScopeNodeToNode)
+			}
+
 			_ = http2.ConfigureTransport(transport)
 		} else {
 			transport.TLSClientConfig.InsecureSkipVerify = true

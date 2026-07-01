@@ -4,12 +4,12 @@ go 1.24.0
 
 require (
 	github.com/couchbase/blance v0.1.6
-	github.com/couchbase/cbauth v0.1.13
+	github.com/couchbase/cbauth v0.1.20
 	github.com/couchbase/clog v0.1.0
 	github.com/couchbase/go-couchbase v0.1.1
 	github.com/couchbase/gocbcore/v10 v10.9.3
-	github.com/couchbase/gomemcached v0.2.1
-	github.com/couchbase/goutils v0.1.2
+	github.com/couchbase/gomemcached v0.3.3
+	github.com/couchbase/goutils v0.3.0
 	github.com/couchbase/tools-common/cloud/v8 v8.1.4
 	github.com/couchbase/tools-common/fs v1.0.3
 	github.com/gorilla/mux v1.8.0
@@ -22,13 +22,14 @@ require (
 	github.com/couchbase/tools-common/types/v2 v2.2.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/golang/snappy v1.0.0 // indirect
+	github.com/google/flatbuffers v24.3.25+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a // indirect
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	golang.org/x/sys v0.39.0 // indirect
