@@ -357,6 +357,73 @@ func TestIndexDefJSON(t *testing.T) {
 	}
 }
 
+func TestIndexDefAppInfoJSON(t *testing.T) {
+	// appInfo of any JSON kind must survive a marshal/unmarshal round-trip.
+	appInfos := []string{
+		`{"gitSHA":"abc123","url":"https://example.com/repo"}`,
+		`"just a string"`,
+		`[1,2,3]`,
+		`42`,
+		`true`,
+	}
+
+	for _, ai := range appInfos {
+		id1 := IndexDef{
+			Type:    "fulltext-index",
+			Name:    "idx",
+			Params:  `{"foo":"bar"}`,
+			AppInfo: OptionalRawMessage(ai),
+		}
+
+		b, err := json.Marshal(id1)
+		if err != nil {
+			t.Fatalf("appInfo %s: marshal err: %v", ai, err)
+		}
+
+		var raw map[string]json.RawMessage
+		if err = json.Unmarshal(b, &raw); err != nil {
+			t.Fatalf("appInfo %s: unmarshal to raw err: %v", ai, err)
+		}
+		if _, ok := raw["appInfo"]; !ok {
+			t.Fatalf("appInfo %s: expected 'appInfo' field in %s", ai, b)
+		}
+
+		var id2 IndexDef
+		if err = json.Unmarshal(b, &id2); err != nil {
+			t.Fatalf("appInfo %s: unmarshal err: %v", ai, err)
+		}
+		if !reflect.DeepEqual(&id1, &id2) {
+			t.Fatalf("appInfo %s: expected equal: %#v, versus: %#v", ai, id1, id2)
+		}
+	}
+
+	// Both an absent appInfo and an explicit null must be omitted from
+	// the JSON (null is treated as absent).
+	for _, in := range []string{
+		`{"type":"fulltext-index","name":"idx"}`,
+		`{"type":"fulltext-index","name":"idx","appInfo":null}`,
+	} {
+		var id IndexDef
+		if err := json.Unmarshal([]byte(in), &id); err != nil {
+			t.Fatalf("%s: unmarshal err: %v", in, err)
+		}
+		if id.AppInfo != nil {
+			t.Fatalf("%s: expected nil AppInfo, got: %q", in, id.AppInfo)
+		}
+		b, err := json.Marshal(id)
+		if err != nil {
+			t.Fatalf("%s: marshal err: %v", in, err)
+		}
+		var raw map[string]json.RawMessage
+		if err = json.Unmarshal(b, &raw); err != nil {
+			t.Fatalf("%s: unmarshal to raw err: %v", in, err)
+		}
+		if _, ok := raw["appInfo"]; ok {
+			t.Fatalf("%s: expected no 'appInfo' field, got: %s", in, b)
+		}
+	}
+}
+
 func TestPlanPIndexJSON(t *testing.T) {
 	id1 := PlanPIndex{}
 	b, err := json.Marshal(id1)

@@ -9,6 +9,8 @@
 package cbgt
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
@@ -34,19 +36,41 @@ type IndexDefs struct {
 
 // An IndexDef is a logical index definition.
 type IndexDef struct {
-	Type            string     `json:"type"` // Ex: "blackhole", etc.
-	Name            string     `json:"name"`
-	UUID            string     `json:"uuid"` // Like a revision id.
-	Params          string     `json:"params"`
-	SourceType      string     `json:"sourceType"`
-	SourceName      string     `json:"sourceName,omitempty"`
-	SourceUUID      string     `json:"sourceUUID,omitempty"`
-	SourceParams    string     `json:"sourceParams,omitempty"` // Optional connection info.
-	PlanParams      PlanParams `json:"planParams,omitempty"`
-	HibernationPath string     `json:"hibernationPath,omitempty"`
+	Type            string             `json:"type"` // Ex: "blackhole", etc.
+	Name            string             `json:"name"`
+	UUID            string             `json:"uuid"` // Like a revision id.
+	Params          string             `json:"params"`
+	SourceType      string             `json:"sourceType"`
+	SourceName      string             `json:"sourceName,omitempty"`
+	SourceUUID      string             `json:"sourceUUID,omitempty"`
+	SourceParams    string             `json:"sourceParams,omitempty"` // Optional connection info.
+	PlanParams      PlanParams         `json:"planParams,omitempty"`
+	HibernationPath string             `json:"hibernationPath,omitempty"`
+	AppInfo         OptionalRawMessage `json:"appInfo,omitempty"`
 
 	// NOTE: Any auth credentials to access datasource, if any, may be
 	// stored as part of SourceParams.
+}
+
+// OptionalRawMessage wraps json.RawMessage but treats empty or `null`
+// JSON as nil, so an absent or explicitly-null value is omitted rather
+// than persisted as a literal null.
+type OptionalRawMessage json.RawMessage
+
+func (m *OptionalRawMessage) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*m = nil
+		return nil
+	}
+	*m = append((*m)[:0], data...)
+	return nil
+}
+
+func (m OptionalRawMessage) MarshalJSON() ([]byte, error) {
+	if len(m) == 0 {
+		return []byte("null"), nil
+	}
+	return m, nil
 }
 
 // An indexDefBase defines the stable, "non-envelopable" fields of an
@@ -56,14 +80,15 @@ type IndexDef struct {
 // struct definition.  If you change IndexDef struct, you must change
 // this indexDefBase definition, too; and also see defs_json.go.
 type indexDefBase struct {
-	Type            string     `json:"type"` // Ex: "blackhole", etc.
-	Name            string     `json:"name"`
-	UUID            string     `json:"uuid"` // Like a revision id.
-	SourceType      string     `json:"sourceType"`
-	SourceName      string     `json:"sourceName,omitempty"`
-	SourceUUID      string     `json:"sourceUUID,omitempty"`
-	PlanParams      PlanParams `json:"planParams,omitempty"`
-	HibernationPath string     `json:"hibernationPath,omitempty"`
+	Type            string             `json:"type"` // Ex: "blackhole", etc.
+	Name            string             `json:"name"`
+	UUID            string             `json:"uuid"` // Like a revision id.
+	SourceType      string             `json:"sourceType"`
+	SourceName      string             `json:"sourceName,omitempty"`
+	SourceUUID      string             `json:"sourceUUID,omitempty"`
+	PlanParams      PlanParams         `json:"planParams,omitempty"`
+	HibernationPath string             `json:"hibernationPath,omitempty"`
+	AppInfo         OptionalRawMessage `json:"appInfo,omitempty"`
 }
 
 // A PlanParams holds input parameters to the planner, that control

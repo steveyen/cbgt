@@ -9,6 +9,7 @@
 package cbgt
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -93,6 +94,7 @@ type CreateIndexPayload struct {
 	PlanParams    PlanParams
 	PrevIndexUUID string
 	ScopedPrefix  string
+	AppInfo       OptionalRawMessage
 }
 
 // Enforcing a maximum index name length of 209;
@@ -148,6 +150,11 @@ func (mgr *Manager) CreateIndexEx(payload *CreateIndexPayload) (string, string, 
 			" than %v characters", MaxIndexNameLength)
 	}
 
+	if len(payload.AppInfo) > 0 && !json.Valid(payload.AppInfo) {
+		return adjustedIndexName, "", NewBadRequestError("manager_api: CreateIndex," +
+			" appInfo must be a legal JSON value")
+	}
+
 	indexDef := &IndexDef{
 		Type:         payload.IndexType,
 		Name:         adjustedIndexName,
@@ -157,6 +164,7 @@ func (mgr *Manager) CreateIndexEx(payload *CreateIndexPayload) (string, string, 
 		SourceUUID:   payload.SourceUUID,
 		SourceParams: payload.SourceParams,
 		PlanParams:   payload.PlanParams,
+		AppInfo:      payload.AppInfo,
 	}
 
 	pindexImplType, exists := PIndexImplTypes[payload.IndexType]

@@ -303,6 +303,7 @@ func (h *CreateIndexHandler) ServeHTTP(
 		IndexParams:   indexParams,
 		PlanParams:    planParams,
 		PrevIndexUUID: prevIndexUUID,
+		AppInfo:       indexDef.AppInfo,
 	}
 
 	if h.scopedIndex {

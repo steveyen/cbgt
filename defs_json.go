@@ -112,6 +112,7 @@ func indexDefToBase(indexDef *IndexDef, base *indexDefBase) {
 	base.SourceUUID = indexDef.SourceUUID
 	base.PlanParams = indexDef.PlanParams
 	base.HibernationPath = indexDef.HibernationPath
+	base.AppInfo = indexDef.AppInfo
 }
 
 // indexDefFromBase copies non-envelope'able fields from the
@@ -125,6 +126,7 @@ func indexDefFromBase(base *indexDefBase, indexDef *IndexDef) {
 	indexDef.SourceUUID = base.SourceUUID
 	indexDef.PlanParams = base.PlanParams
 	indexDef.HibernationPath = base.HibernationPath
+	indexDef.AppInfo = base.AppInfo
 }
 
 // -------------------------------------------------------------------
