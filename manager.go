@@ -323,6 +323,7 @@ type ManagerStats struct {
 type ClusterOptions struct {
 	BleveMaxResultWindow               string `json:"bleveMaxResultWindow"`
 	BleveMaxClauseCount                string `json:"bleveMaxClauseCount"`
+	BleveMaxTerms                      string `json:"bleveMaxTerms"`
 	FeedAllotment                      string `json:"feedAllotment"`
 	FtsMemoryQuota                     string `json:"ftsMemoryQuota"`
 	ConcurrentMergeLimit               string `json:"concurrentMergeLimit"`
