@@ -496,6 +496,14 @@ type GocbcoreDCPFeed struct {
 	shutdownInitiated bool
 	stats             *DestStats
 
+	// closedAtomic mirrors closed (1 == closed) so that the hot
+	// data-path StreamObserver callbacks (Mutation, Deletion, ...)
+	// can consult the feed's closed state without acquiring f.m.
+	// It is set (under f.m) at the same points closed is set, BEFORE
+	// the feed's streams are closed, so any event arriving after
+	// close() began is dropped by the observer fence. See MB-70770.
+	closedAtomic uint32
+
 	// Stream lifecycle bookkeeping: active tracks vbuckets with open
 	// streams (guarded by m), remaining is the WaitGroup drained on
 	// shutdown, and stopAfterRemaining (atomic) counts vbuckets yet
@@ -503,6 +511,19 @@ type GocbcoreDCPFeed struct {
 	active             map[uint16]bool
 	remaining          sync.WaitGroup
 	stopAfterRemaining int32
+
+	// streamOps retains, per vbucket, the gocbcore.PendingOp returned
+	// by OpenStream (guarded by m). MB-70770: a persistent OpenStream
+	// request keeps a routing entry in gocbcore's opaque map for the
+	// life of the stream (a natural StreamEnd, arriving with a success
+	// status, does NOT remove it), and a CloseStream request may never
+	// reach the node that owns the stream after vbucket movement
+	// (NMVB re-routes it to the new owner), leaving a zombie stream
+	// delivering events indefinitely. Cancel()ing the retained op at
+	// close tears down that local routing entry, after which gocbcore
+	// drops further packets for the stream as orphans. Cancel is
+	// idempotent (a completed request cancels to a no-op).
+	streamOps map[uint16]gocbcore.PendingOp
 
 	// completedPartitions is the set of partitions whose DCP streams
 	// hit a terminal-success code path (End(err==nil), or filter-empty
@@ -562,6 +583,16 @@ type gocbcoreDCPFeedStats struct {
 	TotDCPDeletions         uint64
 	TotDCPSeqNoAdvanceds    uint64
 	TotDCPCreateCollections uint64
+
+	// TotDCPStaleEventsDropped counts StreamObserver data events
+	// (snapshot markers, mutations, deletions, expirations, OSO
+	// snapshots, seqno-advanceds, collection events) that arrived
+	// AFTER the feed was closed and were dropped by the observer
+	// fence instead of being forwarded to the Dests. A non-zero
+	// value means a torn-down feed's DCP connection was still
+	// draining buffered events — the MB-70770 "two dispatchers for
+	// one vbucket" hazard that the fence neutralizes.
+	TotDCPStaleEventsDropped uint64
 }
 
 // atomicCopyTo copies metrics from s to r (or, from source to
@@ -664,6 +695,7 @@ func newGocbcoreDCPFeed(name, indexName, indexUUID, servers,
 		stats:              NewDestStats(),
 		active:             make(map[uint16]bool),
 		stopAfterRemaining: stopAfterRemaining,
+		streamOps:          make(map[uint16]gocbcore.PendingOp),
 		closeCh:            make(chan struct{}),
 	}
 
@@ -888,6 +920,92 @@ func (f *GocbcoreDCPFeed) NotifyMgrOnClose() {
 	}
 }
 
+// isClosed reports whether the feed has been closed, without
+// acquiring f.m — safe to call from the StreamObserver data path.
+func (f *GocbcoreDCPFeed) isClosed() bool {
+	return atomic.LoadUint32(&f.closedAtomic) != 0
+}
+
+// dropStaleObserverEvent accounts for a StreamObserver data event
+// that arrived after the feed was closed; the caller must no-op.
+func (f *GocbcoreDCPFeed) dropStaleObserverEvent(callback string,
+	vbId uint16, seq uint64) {
+	atomic.AddUint64(&f.dcpStats.TotDCPStaleEventsDropped, 1)
+	log.Debugf("feed_dcp_gocbcore: [%s] %s dropped on closed feed,"+
+		" vb: %v, seq: %v", f.Name(), callback, vbId, seq)
+}
+
+// retainStreamOp records the PendingOp of an issued OpenStream request
+// so the feed can tear down the stream's local routing at close (see
+// the streamOps field comment). If the feed was closed in the window
+// since the caller's closed-check, the op is canceled right away
+// instead of retained.
+func (f *GocbcoreDCPFeed) retainStreamOp(vbId uint16, op gocbcore.PendingOp) {
+	if op == nil {
+		return
+	}
+	f.m.Lock()
+	if f.closed {
+		f.m.Unlock()
+		// Cancel outside f.m: canceling a live stream synchronously
+		// delivers End(vbId, ErrRequestCanceled), which acquires f.m
+		// via complete().
+		op.Cancel()
+		return
+	}
+	if f.streamOps == nil {
+		f.streamOps = make(map[uint16]gocbcore.PendingOp)
+	}
+	superseded := f.streamOps[vbId]
+	f.streamOps[vbId] = op
+	f.m.Unlock()
+
+	if superseded != nil && superseded != op {
+		// A previous handle for this vb was still retained — normal on
+		// the End-driven reconnect path, whose terminal branch does not
+		// call complete() (the vb stays active across the reconnect), so
+		// the old handle is still in the map when the reconnect's
+		// OpenStream is retained. That old stream is dead server-side
+		// (it received a StreamEnd), but its routing entry outlives a
+		// success-status StreamEnd — and in a pathological race the old
+		// stream could even still be live. Either way, silently
+		// overwriting the handle would make its routing entry
+		// uncancelable at close: exactly the leak this change plugs. So
+		// cancel it here (idempotent; safe on completed ops). A
+		// live-stream cancel synthesizes End(vb, ErrRequestCanceled),
+		// which End() absorbs without touching the vb's
+		// active/remaining bookkeeping while the feed is open.
+		log.Debugf("feed_dcp_gocbcore: [%s] canceling superseded stream"+
+			" op, vb: %v", f.Name(), vbId)
+		superseded.Cancel()
+	}
+}
+
+// takeStreamOpsLOCKED empties the retained per-vb stream ops and
+// returns them. Callers must hold f.m, and must invoke Cancel() on the
+// returned ops only AFTER releasing f.m: canceling a live stream
+// synchronously invokes the request callback, which surfaces as
+// End(vb, ErrRequestCanceled) and re-acquires f.m via complete().
+func (f *GocbcoreDCPFeed) takeStreamOpsLOCKED() []gocbcore.PendingOp {
+	ops := make([]gocbcore.PendingOp, 0, len(f.streamOps))
+	for _, op := range f.streamOps {
+		ops = append(ops, op)
+	}
+	f.streamOps = nil
+	return ops
+}
+
+// cancelStreamOps cancels the given OpenStream PendingOps, removing
+// each stream's routing entry from gocbcore's opaque map so any
+// still-buffered packets for it are dropped as orphans. Safe to call
+// on completed/already-canceled ops (no-op). Must NOT be called with
+// f.m held.
+func cancelStreamOps(ops []gocbcore.PendingOp) {
+	for _, op := range ops {
+		op.Cancel()
+	}
+}
+
 func (f *GocbcoreDCPFeed) close() bool {
 	f.m.Lock()
 	if f.closed {
@@ -895,9 +1013,19 @@ func (f *GocbcoreDCPFeed) close() bool {
 		return false
 	}
 	f.closed = true
+	atomic.StoreUint32(&f.closedAtomic, 1)
 	f.closeAllStreamsLOCKED()
+	streamOps := f.takeStreamOpsLOCKED()
 	CloseDCPAgent(f.bucketName, f.bucketUUID, f.agent)
 	f.m.Unlock()
+
+	// MB-70770: tear down the streams' local routing entries so gocbcore
+	// stops dispatching any still-buffered packets to this feed's
+	// observer (CloseStream alone may never reach the stream's owning
+	// node after vbucket movement). Done after releasing f.m: canceling
+	// a live stream synchronously surfaces End(vb, ErrRequestCanceled),
+	// which re-acquires f.m via complete().
+	cancelStreamOps(streamOps)
 
 	f.mgr.unregisterFeed(f.Name())
 
@@ -926,6 +1054,7 @@ func (f *GocbcoreDCPFeed) closeOnStopAfterReached() {
 		return
 	}
 	f.closed = true
+	atomic.StoreUint32(&f.closedAtomic, 1)
 
 	var hasActive bool
 	for _, vbId := range f.vbucketIds {
@@ -937,8 +1066,12 @@ func (f *GocbcoreDCPFeed) closeOnStopAfterReached() {
 	if hasActive {
 		f.closeAllStreamsLOCKED()
 	}
+	streamOps := f.takeStreamOpsLOCKED()
 	CloseDCPAgent(f.bucketName, f.bucketUUID, f.agent)
 	f.m.Unlock()
+
+	// MB-70770: see close() — tear down local stream routing, outside f.m.
+	cancelStreamOps(streamOps)
 
 	f.mgr.unregisterFeed(f.Name())
 
@@ -952,7 +1085,7 @@ func (f *GocbcoreDCPFeed) closeOnStopAfterReached() {
 
 func (f *GocbcoreDCPFeed) getCloseStreamOptions() gocbcore.CloseStreamOptions {
 	rv := gocbcore.CloseStreamOptions{}
-	if f.agent.HasCollectionsSupport() {
+	if f.agent != nil && f.agent.HasCollectionsSupport() {
 		rv.StreamOptions = &gocbcore.CloseStreamStreamOptions{}
 		if f.streamOptions.StreamOptions != nil {
 			rv.StreamOptions.StreamID = f.streamOptions.StreamOptions.StreamID
@@ -974,7 +1107,22 @@ func (f *GocbcoreDCPFeed) closeAllStreamsLOCKED() {
 
 	for _, vbId := range f.vbucketIds {
 		if f.active[vbId] {
-			f.agent.CloseStream(vbId, closeStreamOptions, func(err error) {})
+			if f.agent != nil {
+				vb := vbId
+				f.agent.CloseStream(vbId, closeStreamOptions, func(err error) {
+					if err != nil {
+						// MB-70770: field visibility for close-stream
+						// requests that fail or get re-routed after
+						// vbucket movement (the zombie-stream case) —
+						// the local routing teardown via the retained
+						// OpenStream op's Cancel() is what actually
+						// stops delivery in that case.
+						log.Warnf("feed_dcp_gocbcore: [%s] CloseStream"+
+							" at feed close, vb: %v, err: %v",
+							f.Name(), vb, err)
+					}
+				})
+			}
 			var sid int16
 			if f.streamOptions.StreamOptions != nil {
 				sid = int16(f.streamOptions.StreamOptions.StreamID)
@@ -1165,6 +1313,13 @@ func (f *GocbcoreDCPFeed) initiateStreamEx(vbId uint16, isNewStream bool,
 		f.onError(true, fmt.Errorf("OpenStream error for vb: %v, err: %v", vbId, err))
 		return
 	}
+
+	// MB-70770: retain the OpenStream op so close() can tear down the
+	// stream's local routing. Retaining before the response is safe:
+	// Cancel() on an unresponded op surfaces as ErrRequestCanceled to
+	// the OpenStream callback (the same path the timeout-cancel below
+	// already exercises), not as a stream event.
+	f.retainStreamOp(vbId, op)
 
 	err = waitForResponse(signal, f.closeCh, op, GocbcoreConnectTimeout)
 	if err != nil {
@@ -1405,6 +1560,10 @@ func (f *GocbcoreDCPFeed) complete(vbId uint16) {
 		f.active[vbId] = false
 		f.remaining.Done()
 	}
+	// The stream reached a terminal path; drop its retained OpenStream
+	// handle (see streamOps). A reconnect for this vb would retain a
+	// fresh op via initiateStreamEx.
+	delete(f.streamOps, vbId)
 	f.m.Unlock()
 }
 

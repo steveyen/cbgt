@@ -148,6 +148,14 @@ func setupDCPAgentConfig(
 	agentPriority gocbcore.DcpAgentPriority,
 	options map[string]string) *gocbcore.DCPAgentConfig {
 
+	// NOTE (MB-70770): never set a DefaultRetryStrategy on DCP agent
+	// configs. When left nil, gocbcore gives DCP requests the
+	// non-retrying failFastRetryStrategy (dcpagent.go), so a
+	// CloseStream/OpenStream rejected with not-my-vbucket fails fast.
+	// KVNotMyVBucketRetryReason is an alwaysRetry reason (retry.go), so
+	// any permissive strategy would transparently re-route such a
+	// request to the vbucket's NEW owner during vbucket movement —
+	// closing or opening a stream on the wrong node.
 	config := &gocbcore.DCPAgentConfig{
 		UserAgent:  name,
 		BucketName: bucketName,
